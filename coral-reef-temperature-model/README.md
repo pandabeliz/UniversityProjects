@@ -4,7 +4,7 @@
 
 ## 📋 Overview
 
-**Course:** [Computational/Environmental Modeling Course]  
+**Course:** Multi Agent Systems
 **Institution:** Tilburg University  
 **Date:** 2022  
 **Status:** ✅ Completed  
