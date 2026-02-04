@@ -167,8 +167,4 @@ LinkedIn: [linkedin.com/in/beliz-pekkan](https://www.linkedin.com/in/beliz-pekka
 
 ---
 
-**Part of:** [University Projects Portfolio](https://github.com/pandabeliz/university-projects)
-
----
-
 **Note:** This project demonstrates the challenges and potential of applying machine learning to ecological conservation. While current models show limitations, the framework provides a foundation for future improvements and highlights the critical need for continued research at the intersection of AI and environmental science.
