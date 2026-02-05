@@ -1,0 +1,859 @@
+---
+title: "Appendix 1: Code Case Study 2 IPD-MA"
+author: "Sanne Puister (2831422), Beliz Pekkan (7990588), Jelmer Visser (4701828)"
+output: html_notebook
+---
+
+# Exercise Interventions for Depression in Older Adults with Cancer: Two-Stage IPDMA
+
+## 0. Setup and Data Import
+
+```{r setup, message=FALSE, warning=FALSE}
+# Load required packages
+library(tidyverse)
+library(broom)
+library(metafor)
+library(knitr)
+library(gridExtra)
+
+# Set options for better output
+options(scipen = 999)  # Avoid scientific notation
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+
+# Import the data
+cancer_data <- read.csv("cancer_data.csv")
+
+# Quick data overview
+cat("Dataset dimensions:", dim(cancer_data), "\n")
+cat("Number of studies:", length(unique(cancer_data$study_id)), "\n")
+```
+
+## 1. Descriptive Statistics
+
+### 1.1 Data Quality Check
+
+```{r data-quality}
+# Check for missing values
+cat("Missing values per variable:\n")
+missing_summary <- colSums(is.na(cancer_data))
+print(missing_summary)
+
+cat("\n")
+
+# Check data structure
+cat("Data structure:\n")
+str(cancer_data)
+```
+
+### 1.2 Participant-Level Descriptive Statistics
+
+```{r participant-descriptives}
+# Overall summary by treatment group
+participant_summary <- cancer_data %>%
+  group_by(treatment) %>%
+  summarise(
+    N = n(),
+    Age_Mean = round(mean(age, na.rm = TRUE), 1),
+    Age_SD = round(sd(age, na.rm = TRUE), 1),
+    Female_N = sum(sex == "Female"),
+    Female_Pct = round(mean(sex == "Female") * 100, 1),
+    Baseline_Mean = round(mean(depression_baseline, na.rm = TRUE), 2),
+    Baseline_SD = round(sd(depression_baseline, na.rm = TRUE), 2),
+    Followup_Mean = round(mean(depression_followup, na.rm = TRUE), 2),
+    Followup_SD = round(sd(depression_followup, na.rm = TRUE), 2)
+  ) %>%
+  mutate(Treatment_Group = ifelse(treatment == 0, "Control", "Exercise"))
+
+kable(participant_summary, 
+      caption = "Table 1: Participant Characteristics by Treatment Group",
+      col.names = c("Treatment", "N", "Age Mean", "Age SD", 
+                    "Female N", "Female %", "Baseline Mean", "Baseline SD",
+                    "Follow-up Mean", "Follow-up SD", "Group"))
+```
+
+```{r depression-change}
+# Create depression change variable
+cancer_data <- cancer_data %>%
+  mutate(depression_change = depression_followup - depression_baseline)
+
+# Summary of depression change by treatment
+change_summary <- cancer_data %>%
+  group_by(treatment) %>%
+  summarise(
+    N = n(),
+    Change_Mean = round(mean(depression_change, na.rm = TRUE), 2),
+    Change_SD = round(sd(depression_change, na.rm = TRUE), 2),
+    Change_Min = round(min(depression_change, na.rm = TRUE), 2),
+    Change_Max = round(max(depression_change, na.rm = TRUE), 2)
+  ) %>%
+  mutate(Treatment_Group = ifelse(treatment == 0, "Control", "Exercise"))
+
+kable(change_summary,
+      caption = "Table 2: Depression Change Scores by Treatment Group",
+      col.names = c("Treatment", "N", "Mean Change", "SD", 
+                    "Min", "Max", "Group"))
+```
+
+### 1.3 Study-Level Descriptive Statistics
+
+```{r study-descriptives}
+# Study-level characteristics
+study_characteristics <- cancer_data %>%
+  group_by(study_id) %>%
+  summarise(
+    N = n(),
+    Country = unique(country)[1],
+    Duration_Weeks = unique(duration_weeks)[1],
+    Mean_Age = round(mean(age), 1),
+    Female_Pct = round(mean(sex == "Female") * 100, 1),
+    Control_N = sum(treatment == 0),
+    Exercise_N = sum(treatment == 1),
+    Baseline_Mean = round(mean(depression_baseline), 2),
+    Followup_Mean = round(mean(depression_followup), 2)
+  ) %>%
+  arrange(study_id)
+
+kable(head(study_characteristics, 10),
+      caption = "Table 3: Study Characteristics (First 10 Studies)",
+      col.names = c("Study ID", "N", "Country", "Duration (weeks)", 
+                    "Mean Age", "% Female", "Control N", "Exercise N",
+                    "Baseline Depression", "Follow-up Depression"))
+
+# Summary of study characteristics
+cat("\nStudy-level summaries:\n")
+cat("Sample size per study: Mean =", round(mean(study_characteristics$N), 1),
+    ", Range =", min(study_characteristics$N), "-", max(study_characteristics$N), "\n")
+cat("Number of countries:", length(unique(study_characteristics$Country)), "\n")
+cat("Countries:", paste(unique(study_characteristics$Country), collapse = ", "), "\n")
+cat("Duration range:", min(study_characteristics$Duration_Weeks), "-", 
+    max(study_characteristics$Duration_Weeks), "weeks\n")
+cat("Mean age range:", round(min(study_characteristics$Mean_Age), 1), "-", 
+    round(max(study_characteristics$Mean_Age), 1), "years\n")
+```
+
+```{r study-distribution-tables}
+# Distribution of studies by country
+country_table <- table(study_characteristics$Country)
+cat("\nStudies per country:\n")
+print(country_table)
+
+# Distribution of studies by duration
+duration_table <- table(study_characteristics$Duration_Weeks)
+cat("\nStudies per duration:\n")
+print(duration_table)
+```
+
+### 1.4 Data Verification
+
+```{r data-verification}
+# Verify that treatment varies within studies (should be 2 for all)
+cat("Treatment groups per study (should all be 2):\n")
+treatment_per_study <- sapply(split(cancer_data, cancer_data$study_id), 
+                              function(df) length(unique(df$treatment)))
+print(treatment_per_study)
+
+# Verify that age varies within studies
+cat("\nNumber of unique ages per study:\n")
+age_per_study <- sapply(split(cancer_data, cancer_data$study_id), 
+                        function(df) length(unique(df$age)))
+print(summary(age_per_study))
+
+# Verify that duration is constant within studies (should all be 1)
+cat("\nDuration values per study (should all be 1 - constant within study):\n")
+duration_per_study <- sapply(split(cancer_data, cancer_data$study_id), 
+                             function(df) length(unique(df$duration_weeks)))
+print(unique(duration_per_study))
+
+# Verify that country is constant within studies (should all be 1)
+cat("\nCountry values per study (should all be 1 - constant within study):\n")
+country_per_study <- sapply(split(cancer_data, cancer_data$study_id), 
+                            function(df) length(unique(df$country)))
+print(unique(country_per_study))
+```
+
+### 1.5 Graphical Descriptive Statistics
+
+```{r fig-depression-boxplot, fig.width=10, fig.height=6}
+# Figure 1: Depression scores by treatment group
+cancer_data_long <- cancer_data %>%
+  select(patient_id, study_id, treatment, 
+         depression_baseline, depression_followup) %>%
+  pivot_longer(cols = c(depression_baseline, depression_followup),
+               names_to = "timepoint",
+               values_to = "depression_score") %>%
+  mutate(
+    timepoint = factor(timepoint, 
+                      levels = c("depression_baseline", "depression_followup"),
+                      labels = c("Baseline", "Follow-up")),
+    treatment_group = factor(treatment, levels = c(0, 1), 
+                            labels = c("Control", "Exercise"))
+  )
+
+ggplot(cancer_data_long, aes(x = timepoint, y = depression_score, 
+                             fill = treatment_group)) +
+  geom_boxplot(alpha = 0.7) +
+  scale_fill_manual(values = c("Control" = "#E69F00", "Exercise" = "#56B4E9")) +
+  labs(
+    title = "Figure 1: Depression Scores by Treatment Group and Timepoint",
+    x = "Timepoint",
+    y = "Depression Score",
+    fill = "Treatment Group"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", size = 14),
+    legend.position = "bottom"
+  )
+```
+
+```{r fig-age-distribution, fig.width=10, fig.height=5}
+# Figure 2: Age distribution by treatment group
+ggplot(cancer_data, aes(x = age, fill = factor(treatment))) +
+  geom_histogram(bins = 30, alpha = 0.6, position = "identity") +
+  scale_fill_manual(values = c("0" = "#E69F00", "1" = "#56B4E9"),
+                    labels = c("Control", "Exercise")) +
+  labs(
+    title = "Figure 2: Age Distribution by Treatment Group",
+    x = "Age (years)",
+    y = "Count",
+    fill = "Treatment Group"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", size = 14),
+    legend.position = "bottom"
+  )
+```
+
+```{r fig-study-characteristics, fig.width=12, fig.height=8}
+# Figure 3: Study characteristics
+p1 <- ggplot(study_characteristics, aes(x = factor(Duration_Weeks))) +
+  geom_bar(fill = "#56B4E9", alpha = 0.7) +
+  labs(
+    title = "A) Distribution of Study Durations",
+    x = "Duration (weeks)",
+    y = "Number of Studies"
+  ) +
+  theme_minimal()
+
+p2 <- ggplot(study_characteristics, aes(x = reorder(Country, Country, length))) +
+  geom_bar(fill = "#E69F00", alpha = 0.7) +
+  coord_flip() +
+  labs(
+    title = "B) Studies per Country",
+    x = "Country",
+    y = "Number of Studies"
+  ) +
+  theme_minimal()
+
+p3 <- ggplot(study_characteristics, aes(x = N)) +
+  geom_histogram(bins = 15, fill = "#009E73", alpha = 0.7) +
+  labs(
+    title = "C) Distribution of Study Sample Sizes",
+    x = "Sample Size",
+    y = "Number of Studies"
+  ) +
+  theme_minimal()
+
+p4 <- ggplot(study_characteristics, aes(x = Mean_Age)) +
+  geom_histogram(bins = 15, fill = "#D55E00", alpha = 0.7) +
+  labs(
+    title = "D) Distribution of Mean Age Across Studies",
+    x = "Mean Age (years)",
+    y = "Number of Studies"
+  ) +
+  theme_minimal()
+
+grid.arrange(p1, p2, p3, p4, ncol = 2,
+             top = "Figure 3: Study-Level Characteristics")
+```
+
+```{r fig-depression-change, fig.width=10, fig.height=6}
+# Figure 4: Depression change by treatment
+ggplot(cancer_data, aes(x = factor(treatment), y = depression_change,
+                        fill = factor(treatment))) +
+  geom_violin(alpha = 0.5) +
+  geom_boxplot(width = 0.2, alpha = 0.7) +
+  scale_fill_manual(values = c("0" = "#E69F00", "1" = "#56B4E9"),
+                    labels = c("Control", "Exercise")) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  labs(
+    title = "Figure 4: Change in Depression Scores by Treatment Group",
+    subtitle = "Negative values indicate improvement (reduction in depression)",
+    x = "Treatment Group",
+    y = "Change in Depression Score (Follow-up - Baseline)",
+    fill = "Treatment Group"
+  ) +
+  scale_x_discrete(labels = c("Control", "Exercise")) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", size = 14),
+    legend.position = "bottom"
+  )
+```
+
+## 2. Two-Stage IPDMA Models
+
+### 2.0 Data Preparation
+
+```{r data-preparation}
+# Convert variables to appropriate types
+cancer_data$treatment <- factor(cancer_data$treatment, 
+                                levels = c(0, 1),
+                                labels = c("0", "1"))
+cancer_data$country <- factor(cancer_data$country)
+cancer_data$study_id <- factor(cancer_data$study_id)
+
+# Split data by study
+data_per_study <- split(cancer_data, cancer_data$study_id)
+
+cat("Data prepared successfully.\n")
+cat("Number of studies:", length(data_per_study), "\n")
+```
+
+------------------------------------------------------------------------
+
+## 2.1 BASE MODEL: Overall Treatment Effect
+
+**Research Question 1:** Does exercise intervention improve depression in older adults with cancer?
+
+### Stage 1: Study-Specific Regression Models
+
+```{r stage1-base}
+# Stage 1: Fit linear regression in each study
+stage1_basemodels <- lapply(data_per_study, function(df) {
+  model <- lm(depression_followup ~ treatment + depression_baseline, data = df)
+  tidy(model)
+})
+
+# Display results for first 3 studies as examples
+cat("Stage 1 results for first 3 studies:\n")
+print(stage1_basemodels[1:3])
+```
+
+### Stage 2: Meta-Analysis of Treatment Effects
+
+```{r stage2-base}
+# Extract treatment effect and standard error from each study
+basemodel_effects <- lapply(stage1_basemodels, function(results) {
+  results %>%
+    filter(term == "treatment1") %>%
+    select(estimate, std.error)
+})
+
+# Combine into one dataset
+input_basemodel_stage2 <- bind_rows(basemodel_effects, .id = "study_id")
+
+kable(input_basemodel_stage2,
+      caption = "Table 4: Study-Specific Treatment Effects (Base Model)",
+      col.names = c("Study ID", "Treatment Effect", "Standard Error"),
+      digits = 3)
+
+# Stage 2: Random-effects meta-analysis
+meta_basemodel <- rma(
+  yi  = estimate,
+  sei = std.error,
+  data = input_basemodel_stage2,
+  method = "REML"
+)
+
+cat("\n=== BASE MODEL: Overall Treatment Effect ===\n")
+print(meta_basemodel)
+```
+
+### Base Model: Results Summary
+
+```{r base-summary}
+cat("\n=== INTERPRETATION (Base Model) ===\n")
+cat("Overall treatment effect:", round(meta_basemodel$beta, 3), "\n")
+cat("95% CI: [", round(meta_basemodel$ci.lb, 3), ",", 
+    round(meta_basemodel$ci.ub, 3), "]\n")
+cat("p-value:", round(meta_basemodel$pval, 4), "\n")
+cat("\nHeterogeneity statistics:\n")
+cat("τ² (between-study variance):", round(meta_basemodel$tau2, 4), "\n")
+cat("I² (% variation due to heterogeneity):", round(meta_basemodel$I2, 1), "%\n")
+cat("H² (heterogeneity ratio):", round(meta_basemodel$H2, 2), "\n")
+cat("Test for heterogeneity: Q =", round(meta_basemodel$QE, 2), 
+    ", p =", round(meta_basemodel$QEp, 4), "\n")
+```
+
+### Base Model: Forest Plot
+
+```{r fig-forest-base, fig.width=10, fig.height=8}
+# Create forest plot
+forest(meta_basemodel,
+       slab = input_basemodel_stage2$study_id,
+       xlab = "Treatment Effect (Change in Depression Score)",
+       header = "Study",
+       mlab = "Random-Effects Model",
+       main = "Figure 5: Forest Plot - Overall Treatment Effect on Depression")
+abline(v = 0, lty = 2)
+```
+
+------------------------------------------------------------------------
+
+## 2.2 AGE INTERACTION MODEL: Age as Effect Modifier
+
+**Research Question 2:** Does the treatment effect depend on patient age?
+
+### Data Preparation: Center Age Within Studies
+
+```{r age-centering}
+# Center age within each study
+data_age <- cancer_data %>%
+  group_by(study_id) %>%
+  mutate(age_centered = age - mean(age)) %>%
+  ungroup()
+
+# Split the centered data by study
+data_per_study_age <- split(data_age, data_age$study_id)
+
+cat("Age centered within studies.\n")
+cat("Example - Study 1 age statistics:\n")
+cat("  Original age range:", 
+    min(data_per_study_age[[1]]$age), "-", 
+    max(data_per_study_age[[1]]$age), "\n")
+cat("  Mean age:", round(mean(data_per_study_age[[1]]$age), 2), "\n")
+cat("  Centered age range:", 
+    round(min(data_per_study_age[[1]]$age_centered), 2), "-", 
+    round(max(data_per_study_age[[1]]$age_centered), 2), "\n")
+cat("  Mean centered age:", round(mean(data_per_study_age[[1]]$age_centered), 2), "\n")
+```
+
+### Stage 1: Study-Specific Models with Treatment×Age Interaction
+
+```{r stage1-age}
+# Stage 1: Fit models with treatment-by-age interaction
+stage1_agemodels <- lapply(data_per_study_age, function(df) {
+  model <- lm(depression_followup ~ treatment * age_centered + depression_baseline, 
+              data = df)
+  tidy(model)
+})
+
+# Display results for first 2 studies
+cat("Stage 1 results (first 2 studies):\n")
+print(stage1_agemodels[1:2])
+```
+
+### Stage 2: Meta-Analysis of Main Effect and Interaction
+
+```{r stage2-age}
+# Extract MAIN treatment effect (at mean age)
+agemodel_maineffect <- lapply(stage1_agemodels, function(results) {
+  results %>%
+    filter(term == "treatment1") %>%
+    select(estimate, std.error)
+})
+
+# Extract INTERACTION effect (age modification)
+agemodel_interaction <- lapply(stage1_agemodels, function(results) {
+  results %>%
+    filter(term == "treatment1:age_centered") %>%
+    select(estimate, std.error)
+})
+
+# Combine into datasets
+input_age_main_stage2 <- bind_rows(agemodel_maineffect, .id = "study_id")
+input_age_interaction_stage2 <- bind_rows(agemodel_interaction, .id = "study_id")
+
+# Display tables
+kable(input_age_main_stage2,
+      caption = "Table 5: Study-Specific Main Treatment Effects (at mean age)",
+      col.names = c("Study ID", "Treatment Effect", "Standard Error"),
+      digits = 3)
+
+kable(input_age_interaction_stage2,
+      caption = "Table 6: Study-Specific Treatment×Age Interactions",
+      col.names = c("Study ID", "Interaction Effect", "Standard Error"),
+      digits = 4)
+
+# Meta-analyze main treatment effect
+meta_age_main <- rma(
+  yi  = estimate,
+  sei = std.error,
+  data = input_age_main_stage2,
+  method = "REML"
+)
+
+# Meta-analyze interaction effect
+meta_age_interaction <- rma(
+  yi  = estimate,
+  sei = std.error,
+  data = input_age_interaction_stage2,
+  method = "REML"
+)
+
+cat("\n=== AGE MODEL: Main Treatment Effect (at mean age) ===\n")
+print(meta_age_main)
+
+cat("\n=== AGE MODEL: Treatment×Age Interaction ===\n")
+print(meta_age_interaction)
+```
+
+### Age Model: Results Summary
+
+```{r age-summary}
+cat("\n=== INTERPRETATION (Age Interaction Model) ===\n")
+cat("\nMain treatment effect (at mean age):\n")
+cat("  Effect:", round(meta_age_main$beta, 3), "\n")
+cat("  95% CI: [", round(meta_age_main$ci.lb, 3), ",", 
+    round(meta_age_main$ci.ub, 3), "]\n")
+cat("  p-value:", round(meta_age_main$pval, 4), "\n")
+
+cat("\nTreatment×Age interaction:\n")
+cat("  Effect:", round(meta_age_interaction$beta, 4), "\n")
+cat("  95% CI: [", round(meta_age_interaction$ci.lb, 4), ",", 
+    round(meta_age_interaction$ci.ub, 4), "]\n")
+cat("  p-value:", round(meta_age_interaction$pval, 4), "\n")
+
+cat("\nHeterogeneity (Interaction):\n")
+cat("τ²:", round(meta_age_interaction$tau2, 4), "\n")
+cat("I²:", round(meta_age_interaction$I2, 1), "%\n")
+```
+
+### Age Model: Forest Plots
+
+```{r fig-forest-age, fig.width=12, fig.height=12}
+par(mfrow = c(2, 1))
+
+# Main effect
+forest(meta_age_main,
+       slab = input_age_main_stage2$study_id,
+       xlab = "Treatment Effect at Mean Age",
+       header = "Study",
+       mlab = "Random-Effects Model",
+       main = "Figure 8A: Main Treatment Effect (at mean age)")
+abline(v = 0, lty = 2)
+
+# Interaction effect
+forest(meta_age_interaction,
+       slab = input_age_interaction_stage2$study_id,
+       xlab = "Treatment×Age Interaction",
+       header = "Study",
+       mlab = "Random-Effects Model",
+       main = "Figure 8B: Treatment×Age Interaction Effect")
+abline(v = 0, lty = 2)
+
+par(mfrow = c(1, 1))
+```
+
+------------------------------------------------------------------------
+
+## 2.3 DURATION META-REGRESSION: Study Duration as Moderator
+
+**Research Question 3:** Does the treatment effect depend on intervention duration?
+
+**Note:** Duration is a study-level variable (does not vary within studies), so we use meta-regression in Stage 2 to test if study duration predicts treatment effect size.
+
+### Stage 1: Same as Base Model
+
+```{r duration-stage1}
+cat("Stage 1: Using base model results (duration is study-level variable)\n")
+cat("Number of stage 1 models:", length(stage1_basemodels), "\n")
+```
+
+### Stage 2: Meta-Regression with Duration as Moderator
+
+```{r stage2-duration}
+# Extract study-level duration
+study_duration <- tibble(
+  study_id = names(data_per_study),
+  duration = sapply(data_per_study, function(df) unique(df$duration_weeks)[1])
+)
+
+# Merge with stage 1 estimates
+input_durationmodel_stage2 <- input_basemodel_stage2 %>%
+  left_join(study_duration, by = "study_id")
+
+kable(input_durationmodel_stage2,
+      caption = "Table 7: Treatment Effects with Study Duration",
+      col.names = c("Study ID", "Treatment Effect", "Standard Error", 
+                    "Duration (weeks)"),
+      digits = 3)
+
+# Meta-regression with duration as moderator
+meta_durationmodel <- rma(
+  yi   = estimate,
+  sei  = std.error,
+  mods = ~ duration,
+  data = input_durationmodel_stage2,
+  method = "REML"
+)
+
+cat("\n=== DURATION MODEL: Meta-Regression ===\n")
+print(meta_durationmodel)
+```
+
+### Duration Model: Results Summary
+
+```{r duration-summary}
+cat("\n=== INTERPRETATION (Duration Meta-Regression) ===\n")
+cat("Intercept (effect at duration = 0):", round(meta_durationmodel$beta[1], 3), "\n")
+cat("Duration slope:", round(meta_durationmodel$beta[2], 4), "\n")
+cat("  95% CI: [", round(meta_durationmodel$ci.lb[2], 4), ",", 
+    round(meta_durationmodel$ci.ub[2], 4), "]\n")
+cat("  p-value:", round(meta_durationmodel$pval[2], 4), "\n")
+
+cat("\nResidual heterogeneity (after accounting for duration):\n")
+cat("τ²:", round(meta_durationmodel$tau2, 4), "\n")
+cat("I²:", round(meta_durationmodel$I2, 1), "%\n")
+cat("Test for residual heterogeneity: QE =", round(meta_durationmodel$QE, 2),
+    ", p =", round(meta_durationmodel$QEp, 4), "\n")
+cat("\nR² (variance explained by duration):", 
+    round(max(0, (meta_basemodel$tau2 - meta_durationmodel$tau2) / meta_basemodel$tau2 * 100), 1), "%\n")
+```
+
+### Duration Model: Visualization
+
+```{r fig-duration-regression, fig.width=10, fig.height=8}
+# Bubble plot with regression line
+plot_data <- input_durationmodel_stage2 %>%
+  mutate(weight = 1 / std.error^2)
+
+ggplot(plot_data, aes(x = duration, y = estimate)) +
+  geom_point(aes(size = weight), alpha = 0.6, color = "#56B4E9") +
+  geom_smooth(method = "lm", se = TRUE, color = "#E69F00", fill = "#E69F00", alpha = 0.2) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  labs(
+    title = "Figure 9: Meta-Regression - Treatment Effect by Study Duration",
+    x = "Intervention Duration (weeks)",
+    y = "Treatment Effect (Change in Depression)",
+    size = "Precision\n(1/SE²)"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", size = 14),
+    legend.position = "right"
+  )
+```
+
+------------------------------------------------------------------------
+
+## 2.4 COUNTRY META-REGRESSION: Study Country as Moderator
+
+**Research Question 4:** Does the treatment effect depend on the country where the study was conducted?
+
+**Note:** Country is a study-level variable (does not vary within studies), so we use meta-regression in Stage 2 to test if study country predicts treatment effect size.
+
+### Stage 1: Same as Base Model
+
+```{r country-stage1}
+cat("Stage 1: Using base model results (country is study-level variable)\n")
+cat("Number of stage 1 models:", length(stage1_basemodels), "\n")
+```
+
+### Stage 2: Meta-Regression with Country as Moderator
+
+```{r stage2-country}
+# Extract study-level country
+study_country <- tibble(
+  study_id = names(data_per_study),
+  country = sapply(data_per_study, function(df) as.character(unique(df$country)[1]))
+)
+
+# Merge with stage 1 estimates
+input_countrymodel_stage2 <- input_basemodel_stage2 %>%
+  left_join(study_country, by = "study_id") %>%
+  mutate(country = factor(country))
+
+kable(input_countrymodel_stage2,
+      caption = "Table 8: Treatment Effects by Study Country",
+      col.names = c("Study ID", "Treatment Effect", "Standard Error", "Country"),
+      digits = 3)
+
+# Check number of studies per country
+country_counts <- table(input_countrymodel_stage2$country)
+cat("\nNumber of studies per country:\n")
+print(country_counts)
+
+# Meta-regression with country as moderator
+meta_countrymodel <- rma(
+  yi   = estimate,
+  sei  = std.error,
+  mods = ~ country,
+  data = input_countrymodel_stage2,
+  method = "REML"
+)
+
+cat("\n=== COUNTRY MODEL: Meta-Regression ===\n")
+print(meta_countrymodel)
+```
+
+### Country Model: Results Summary
+
+```{r country-summary}
+cat("\n=== INTERPRETATION (Country Meta-Regression) ===\n")
+
+# Get country names and effects
+country_levels <- levels(input_countrymodel_stage2$country)
+cat("Reference category:", country_levels[1], "\n\n")
+
+cat("Treatment effects by country:\n")
+cat("  ", country_levels[1], "(reference):", 
+    round(meta_countrymodel$beta[1], 3), "\n")
+
+if(length(country_levels) > 1) {
+  for(i in 2:length(country_levels)) {
+    country_name <- country_levels[i]
+    effect_diff <- meta_countrymodel$beta[i]
+    ci_lb <- meta_countrymodel$ci.lb[i]
+    ci_ub <- meta_countrymodel$ci.ub[i]
+    pval <- meta_countrymodel$pval[i]
+    
+    cat("  ", country_name, "vs", country_levels[1], ":\n")
+    cat("    Difference:", round(effect_diff, 3), "\n")
+    cat("    95% CI: [", round(ci_lb, 3), ",", round(ci_ub, 3), "]\n")
+    cat("    p-value:", round(pval, 4), "\n")
+  }
+}
+
+cat("\nOverall test of country effects:\n")
+cat("  QM =", round(meta_countrymodel$QM, 2), 
+    ", df =", meta_countrymodel$m, 
+    ", p =", round(meta_countrymodel$QMp, 4), "\n")
+
+cat("\nResidual heterogeneity (after accounting for country):\n")
+cat("τ²:", round(meta_countrymodel$tau2, 4), "\n")
+cat("I²:", round(meta_countrymodel$I2, 1), "%\n")
+cat("R² (variance explained by country):", 
+    round(max(0, (meta_basemodel$tau2 - meta_countrymodel$tau2) / meta_basemodel$tau2 * 100), 1), "%\n")
+```
+
+### Country Model: Visualization
+
+```{r fig-country-effects, fig.width=10, fig.height=8}
+# Calculate mean effect and CI by country
+country_summary <- input_countrymodel_stage2 %>%
+  group_by(country) %>%
+  summarise(
+    n_studies = n(),
+    mean_effect = mean(estimate),
+    se_effect = sqrt(sum(std.error^2)) / n()
+  ) %>%
+  mutate(
+    ci_lb = mean_effect - 1.96 * se_effect,
+    ci_ub = mean_effect + 1.96 * se_effect
+  )
+
+ggplot(country_summary, aes(x = reorder(country, mean_effect), y = mean_effect)) +
+  geom_point(aes(size = n_studies), color = "#56B4E9") +
+  geom_errorbar(aes(ymin = ci_lb, ymax = ci_ub), width = 0.2, color = "#56B4E9") +
+  geom_hline(yintercept = meta_basemodel$beta, linetype = "dashed", 
+             color = "#E69F00", linewidth = 1) +
+  geom_hline(yintercept = 0, linetype = "dotted", color = "red") +
+  coord_flip() +
+  labs(
+    title = "Figure 10: Mean Treatment Effects by Country",
+    subtitle = "Orange dashed line = overall pooled effect",
+    x = "Country",
+    y = "Mean Treatment Effect (Change in Depression)",
+    size = "Number of\nStudies"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", size = 14),
+    legend.position = "right"
+  )
+```
+
+------------------------------------------------------------------------
+
+## 3. Model Comparison and Summary
+
+### 3.1 Compare Heterogeneity Across Models
+
+```{r model-comparison}
+# create comparison table
+model_comparison <- tibble(
+  Model = c("Base (Overall Effect)", 
+            "Age Main Effect",
+            "Age Interaction",
+            "Duration Meta-Regression", 
+            "Country Meta-Regression"),
+  Estimate = c(meta_basemodel$beta,
+               meta_age_main$beta,
+               meta_age_interaction$beta,
+               meta_durationmodel$beta[1],
+               meta_countrymodel$beta[1]),
+  CI_lower = c(meta_basemodel$ci.lb,
+               meta_age_main$ci.lb,
+               meta_age_interaction$ci.lb,
+               meta_durationmodel$ci.lb[1],
+               meta_countrymodel$ci.lb[1]),
+  CI_upper = c(meta_basemodel$ci.ub,
+               meta_age_main$ci.ub,
+               meta_age_interaction$ci.ub,
+               meta_durationmodel$ci.ub[1],
+               meta_countrymodel$ci.ub[1]),
+  SE = c(meta_basemodel$se,
+         meta_age_main$se,
+         meta_age_interaction$se,
+         meta_durationmodel$se[1],
+         meta_countrymodel$se[1]),
+  P_value = c(meta_basemodel$pval,
+              meta_age_main$pval,
+              meta_age_interaction$pval,
+              meta_durationmodel$pval[1],
+              meta_countrymodel$pval[1]),
+  Tau2 = c(meta_basemodel$tau2,
+           meta_age_main$tau2,
+           meta_age_interaction$tau2,
+           meta_durationmodel$tau2,
+           meta_countrymodel$tau2),
+  I2 = c(meta_basemodel$I2,
+         meta_age_main$I2,
+         meta_age_interaction$I2,
+         meta_durationmodel$I2,
+         meta_countrymodel$I2)
+) %>%
+  mutate(CI_95 = paste0("(", round(CI_lower, 3), ", ", round(CI_upper, 3), ")")) %>%
+  select(Model, Estimate, CI_95, SE, P_value, Tau2, I2)
+
+kable(model_comparison,
+      caption = "Table 2: Comparison of Meta-Analysis Models",
+      col.names = c("Model", "Estimate", "95% CI", "SE", "P-value", "τ²", "I² (%)"),
+      digits = c(0, 3, 0, 3, 4, 4, 1))
+
+cat("\n=== SUMMARY ===\n")
+cat("Pooled estimates and heterogeneity comparison:\n\n")
+
+cat("Base model:\n")
+cat("  Estimate: ", round(meta_basemodel$b[1], 3), 
+    " (95% CI: ", round(meta_basemodel$ci.lb, 3), ", ", 
+    round(meta_basemodel$ci.ub, 3), ")\n", sep = "")
+cat("  τ² = ", round(meta_basemodel$tau2, 4), "\n\n", sep = "")
+
+cat("Age Main Effect model:\n")
+cat("  Estimate: ", round(meta_age_main$b[1], 3), 
+    " (95% CI: ", round(meta_age_main$ci.lb, 3), ", ", 
+    round(meta_age_main$ci.ub, 3), ")\n", sep = "")
+cat("  τ² = ", round(meta_age_main$tau2, 4), 
+    " (", round((1 - meta_age_main$tau2/meta_basemodel$tau2)*100, 1), 
+    "% reduction)\n\n", sep = "")
+
+cat("Age Interaction model:\n")
+cat("  Estimate: ", round(meta_age_interaction$b[1], 3), 
+    " (95% CI: ", round(meta_age_interaction$ci.lb, 3), ", ", 
+    round(meta_age_interaction$ci.ub, 3), ")\n", sep = "")
+cat("  τ² = ", round(meta_age_interaction$tau2, 4), 
+    " (", round((1 - meta_age_interaction$tau2/meta_basemodel$tau2)*100, 1), 
+    "% reduction)\n\n", sep = "")
+
+cat("Duration model:\n")
+cat("  Estimate: ", round(meta_durationmodel$b[1], 3), 
+    " (95% CI: ", round(meta_durationmodel$ci.lb, 3), ", ", 
+    round(meta_durationmodel$ci.ub, 3), ")\n", sep = "")
+cat("  τ² = ", round(meta_durationmodel$tau2, 4), 
+    " (", round((1 - meta_durationmodel$tau2/meta_basemodel$tau2)*100, 1), 
+    "% reduction)\n\n", sep = "")
+
+cat("Country model:\n")
+cat("  Estimate: ", round(meta_countrymodel$b[1], 3), 
+    " (95% CI: ", round(meta_countrymodel$ci.lb, 3), ", ", 
+    round(meta_countrymodel$ci.ub, 3), ")\n", sep = "")
+cat("  τ² = ", round(meta_countrymodel$tau2, 4), 
+    " (", round((1 - meta_countrymodel$tau2/meta_basemodel$tau2)*100, 1), 
+    "% reduction)\n", sep = "")
+```
+
+------------------------------------------------------------------------
